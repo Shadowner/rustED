@@ -9,23 +9,23 @@ use vulkano::{
     pipeline::graphics::viewport::Viewport,
     render_pass::{Framebuffer, FramebufferCreateInfo, RenderPass},
     swapchain::{Swapchain, SwapchainCreateInfo},
+    sync::{self, GpuFuture},
     Version, VulkanLibrary,
 };
-use winit::{event_loop::EventLoop, platform::run_return::EventLoopExtRunReturn, window::Window};
-
-use super::{
-    engine_window::{init_window, EngineWindow},
-    physical_devices::{get_compatible_physical_devices, get_prefered_physical_device},
+use winit::{
+    event::{Event, WindowEvent},
+    event_loop::ControlFlow,
+    window::Window,
 };
 
-pub struct SwapchainRelated {
-    pub swapchain: Arc<Swapchain>,
-    pub images: Vec<Arc<vulkano::image::SwapchainImage>>,
-}
+use super::{
+    engine_window::{self, init_window, EngineWindow},
+    physical_devices::{get_compatible_physical_devices, get_prefered_physical_device},
+    swapchain_related::SwapchainRelated,
+};
 
 pub struct Engine {
     pub instance: Arc<Instance>,
-    pub engine_window: EngineWindow,
     pub device: Arc<Device>,
     pub queue: Arc<Queue>,
     pub command_buffer_allocator: StandardCommandBufferAllocator,
@@ -37,7 +37,7 @@ const WIDTH: u32 = 800;
 const HEIGHT: u32 = 600;
 
 impl Engine {
-    pub fn init() -> Self {
+    pub fn init() -> (Self, EngineWindow) {
         let instance = {
             let library = VulkanLibrary::new().unwrap();
             let extensions = vulkano_win::required_extensions(&library);
@@ -127,18 +127,28 @@ impl Engine {
         };
 
         //TODO: Create a queue for each queue family
-        Self {
-            instance,
+        (
+            Self {
+                instance,
+                device,
+                queue: queues.next().unwrap(),
+                swapchain_related: SwapchainRelated { swapchain, images },
+                command_buffer_allocator,
+                viewport,
+            },
             engine_window,
-            device,
-            queue: queues.next().unwrap(),
-            swapchain_related: SwapchainRelated { swapchain, images },
-            command_buffer_allocator,
-            viewport,
-        }
+        )
     }
 
-    pub fn main_loop(&mut self) {
+    pub fn start_main_loop(
+        mut self,
+        engine_window: EngineWindow,
+        mut render_loop: fn(engine: &mut Engine),
+    ) {
+        let mut recreate_swapchain = false;
+        let mut previous_frame_end =
+            Some(Box::new(sync::now(self.device.clone())) as Box<dyn GpuFuture>);
+
         let render_pass = vulkano::single_pass_renderpass!(
             self.device.clone(),
             attachments: {
@@ -162,27 +172,44 @@ impl Engine {
             &mut self.viewport,
         );
 
-        loop {
-            //Handle close
-            let mut done = false;
+        //Handle close
+        let mut done = false;
 
-            self.engine_window
-                .event_loop
-                .run_return(|event, _, control_flow| {
-                    *control_flow = winit::event_loop::ControlFlow::Exit;
-                    match event {
-                        winit::event::Event::WindowEvent { event, .. } => match event {
-                            winit::event::WindowEvent::CloseRequested => done = true,
-                            _ => (),
-                        },
-                        _ => (),
+        engine_window.event_loop.run(move |event, _, control_flow| {
+            match event {
+                Event::WindowEvent {
+                    event: WindowEvent::CloseRequested,
+                    ..
+                } => {
+                    *control_flow = ControlFlow::Exit;
+                }
+                Event::WindowEvent {
+                    event: WindowEvent::Resized(_),
+                    ..
+                } => {
+                    recreate_swapchain = true;
+                }
+                Event::RedrawEventsCleared => {
+                    if recreate_swapchain {
+                        self.swapchain_related
+                            .recreate_swapchain(&engine_window.surface);
+
+                        framebuffers = window_size_dependent_setup(
+                            &self.swapchain_related.images,
+                            render_pass.clone(),
+                            &mut self.viewport,
+                        );
+                        recreate_swapchain = false;
                     }
-                });
 
-            if done {
-                return;
+                    previous_frame_end.as_mut().unwrap().cleanup_finished();
+                    render_loop(&mut self);
+
+                    // do our render operations here
+                }
+                _ => {}
             }
-        }
+        });
     }
 }
 
