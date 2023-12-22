@@ -5,8 +5,8 @@ use vulkano_win::VkSurfaceBuild;
 use winit::event_loop::EventLoop;
 
 pub struct EngineWindow {
-    surface: Arc<Surface>,
-    event_loop: EventLoop<()>,
+    pub surface: Arc<Surface>,
+    pub event_loop: EventLoop<()>,
 }
 
 pub fn init_window(instance: &Arc<Instance>) -> EngineWindow {
