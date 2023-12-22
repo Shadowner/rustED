@@ -11,6 +11,7 @@ use super::{
 pub struct SwapchainRelated {
     pub swapchain: Arc<Swapchain>,
     pub images: Vec<Arc<vulkano::image::SwapchainImage>>,
+    pub recreate_swapchain: bool,
 }
 
 impl SwapchainRelated {

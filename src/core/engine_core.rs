@@ -8,7 +8,7 @@ use vulkano::{
     instance::{Instance, InstanceCreateInfo},
     pipeline::graphics::viewport::Viewport,
     render_pass::{Framebuffer, FramebufferCreateInfo, RenderPass},
-    swapchain::{Swapchain, SwapchainCreateInfo},
+    swapchain::{self, AcquireError, Swapchain, SwapchainCreateInfo},
     sync::{self, GpuFuture},
     Version, VulkanLibrary,
 };
@@ -19,7 +19,8 @@ use winit::{
 };
 
 use super::{
-    engine_window::{self, init_window, EngineWindow},
+    engine_window::{init_window, EngineWindow},
+    image_related,
     physical_devices::{get_compatible_physical_devices, get_prefered_physical_device},
     swapchain_related::SwapchainRelated,
 };
@@ -132,7 +133,11 @@ impl Engine {
                 instance,
                 device,
                 queue: queues.next().unwrap(),
-                swapchain_related: SwapchainRelated { swapchain, images },
+                swapchain_related: SwapchainRelated {
+                    swapchain,
+                    images,
+                    recreate_swapchain: false,
+                },
                 command_buffer_allocator,
                 viewport,
             },
@@ -143,9 +148,11 @@ impl Engine {
     pub fn start_main_loop(
         mut self,
         engine_window: EngineWindow,
-        mut render_loop: fn(engine: &mut Engine),
+        mut render_loop: fn(
+            engine: &mut Engine,
+            image_related::ImageRelated,
+        ) -> (Option<Box<dyn GpuFuture>>),
     ) {
-        let mut recreate_swapchain = false;
         let mut previous_frame_end =
             Some(Box::new(sync::now(self.device.clone())) as Box<dyn GpuFuture>);
 
@@ -187,10 +194,10 @@ impl Engine {
                     event: WindowEvent::Resized(_),
                     ..
                 } => {
-                    recreate_swapchain = true;
+                    self.swapchain_related.recreate_swapchain = true;
                 }
                 Event::RedrawEventsCleared => {
-                    if recreate_swapchain {
+                    if self.swapchain_related.recreate_swapchain {
                         self.swapchain_related
                             .recreate_swapchain(&engine_window.surface);
 
@@ -199,12 +206,36 @@ impl Engine {
                             render_pass.clone(),
                             &mut self.viewport,
                         );
-                        recreate_swapchain = false;
+                        self.swapchain_related.recreate_swapchain = false;
                     }
 
                     previous_frame_end.as_mut().unwrap().cleanup_finished();
-                    render_loop(&mut self);
+                    let (image_index, suboptimal, acquire_future) =
+                        match swapchain::acquire_next_image(
+                            self.swapchain_related.swapchain.clone(),
+                            None,
+                        ) {
+                            Ok(r) => r,
+                            Err(AcquireError::OutOfDate) => {
+                                self.swapchain_related.recreate_swapchain = true;
+                                return;
+                            }
+                            Err(e) => panic!("Failed to acquire next image: {:?}", e),
+                        };
 
+                    if suboptimal {
+                        self.swapchain_related.recreate_swapchain = true;
+                        return;
+                    }
+
+                    let mut image_related = image_related::ImageRelated {
+                        previous_frame_end: previous_frame_end.take(),
+                        image_index,
+                        future: acquire_future,
+                        framebuffer: framebuffers[image_index as usize].clone(),
+                    };
+
+                    previous_frame_end = render_loop(&mut self, image_related);
                     // do our render operations here
                 }
                 _ => {}
